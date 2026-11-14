@@ -39,6 +39,11 @@
   <div class="actions">
     <a class="btn" href="{{ url_for('public.version_detail', version_id=version.id) }}">查看对外页面</a>
     <a class="btn secondary" href="{{ url_for('public.download', version_id=version.id) }}">下载原始文件</a>
+    <a class="btn secondary" href="{{ url_for('admin.correction_page', version_id=version.id) }}">更正观测数值</a>
+  </div>
+  <div class="notice">
+    更正只影响分析人员看到的现用值，并保留逐次更正记录；原始 CSV 下载内容不变。
+    若该日期重新发布，新版本不会沿用本版本的更正。
   </div>
 {% endif %}
 
@@ -77,16 +82,32 @@
           <th>指标</th>
           <th>观测时刻</th>
           <th class="num">数值</th>
+          <th class="num">现用值</th>
+          <th>更正</th>
         </tr>
       </thead>
       <tbody>
-        {% for row in detail.rows %}
+        {% for item in rows %}
         <tr>
           <td class="num muted">{{ loop.index + (detail.page - 1) * detail.per_page }}</td>
-          <td>{{ row.site }}</td>
-          <td>{{ row.metric }}</td>
-          <td class="mono">{{ row.observed_at }}</td>
-          <td class="num mono">{{ row.value_text }}</td>
+          <td>{{ item.row.site }}</td>
+          <td>{{ item.row.metric }}</td>
+          <td class="mono">{{ item.row.observed_at }}</td>
+          <td class="num mono">{{ item.original_text }}</td>
+          <td class="num mono">{{ item.current_text }}</td>
+          <td class="small">
+            {% if item.revision_no %}
+              {{ item.revision_no }} 次
+              {% if version.status == 'published' %}
+                · <a href="{{ url_for('admin.correction_page', version_id=version.id, observation_id=item.row.id) }}">再更正</a>
+              {% endif %}
+            {% else %}
+              <span class="muted">—</span>
+              {% if version.status == 'published' %}
+                · <a href="{{ url_for('admin.correction_page', version_id=version.id, observation_id=item.row.id) }}">更正</a>
+              {% endif %}
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>

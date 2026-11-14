@@ -76,6 +76,7 @@
                 <a class="btn small secondary" href="{{ url_for('admin.candidate_detail', version_id=version.id) }}">查看</a>
                 {% if version.status == 'published' %}
                   <a class="btn small secondary" href="{{ url_for('public.download', version_id=version.id) }}">下载</a>
+                  <a class="btn small" href="{{ url_for('admin.correction_page', version_id=version.id) }}">更正数值</a>
                 {% endif %}
               </div>
             </td>

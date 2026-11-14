@@ -45,6 +45,28 @@ CREATE TABLE IF NOT EXISTS observations (
 
 CREATE INDEX IF NOT EXISTS idx_observations_version
     ON observations (version_id);
+
+-- Corrections are bound to one observation of one published version.  The
+-- original observation row (and therefore the original CSV value) is never
+-- changed; the current effective value is the latest correction for the row.
+-- A newly published version gets fresh observation rows, so corrections made
+-- on an older version never carry over to it.
+CREATE TABLE IF NOT EXISTS corrections (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id      INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+    observation_id  INTEGER NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+    revision_no     INTEGER NOT NULL,
+    from_value      REAL    NOT NULL,
+    from_value_text TEXT    NOT NULL,
+    to_value        REAL    NOT NULL,
+    to_value_text   TEXT    NOT NULL,
+    reason          TEXT    NOT NULL,
+    corrected_at    TEXT    NOT NULL,
+    UNIQUE (observation_id, revision_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_corrections_version
+    ON corrections (version_id, observation_id, revision_no);
 """
 
 

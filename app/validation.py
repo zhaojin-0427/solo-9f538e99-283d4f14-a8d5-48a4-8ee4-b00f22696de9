@@ -215,6 +215,15 @@ def _parse_value(raw: str, *, decimal_comma: bool = False) -> tuple[float, str]:
     return number, canonical
 
 
+def parse_correction_value(raw: str) -> tuple[float, str]:
+    """Parse a corrected value submitted from the correction form.
+
+    Accepts the same finite-decimal syntax as CSV values.  A value equal to
+    the current value is not a correction, so callers reject ``unchanged``.
+    """
+    return _parse_value(raw)
+
+
 def validate_file(path: str | Path, dataset_date: date) -> ValidationResult:
     """Parse and validate *path* for publication on *dataset_date*."""
     result = ValidationResult()

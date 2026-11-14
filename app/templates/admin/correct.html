@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}更正数值 · {{ version.dataset_date }} v{{ version.version_no }}{% endblock %}
+{% block content %}
+<div class="card-head">
+  <div>
+    <h1>更正观测数值</h1>
+    <p class="lede">
+      {{ version.dataset_date }} · <span class="badge badge-version">v{{ version.version_no }}</span>
+      {% if version.status == 'published' %}
+        <span class="badge badge-published">当前发布版本</span>
+      {% else %}
+        <span class="badge badge-superseded">已被替换</span>
+      {% endif %}
+    </p>
+  </div>
+</div>
+
+{% if notice %}
+<div class="notice warn" role="alert">{{ notice }}</div>
+{% endif %}
+
+{% if conflict %}
+<div class="notice error" role="alert">
+  <strong>{{ '提交冲突' if conflict.kind == 'observation' else '版本已变化' }}</strong>：{{ conflict.message }}
+  {% if conflict.kind == 'version' and conflict.current %}
+    <p class="small">
+      该日期当前对外版本为
+      <a href="{{ url_for('admin.correction_page', version_id=conflict.current.id) }}">v{{ conflict.current.version_no }}</a>，
+      请在该版本上重新更正。
+    </p>
+  {% elif conflict.kind == 'observation' and conflict.current_revision_no %}
+    <p class="small">该观测现已有 {{ conflict.current_revision_no }} 次更正，请刷新下方页面确认现用值后再提交。</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>第一步：选择一条观测</h2>
+    <span class="muted small">仅列出该发布版本的观测；原值来自原始 CSV，不可更改</span>
+  </div>
+  <form class="filters" method="get" action="{{ url_for('admin.correction_page', version_id=version.id) }}">
+    <div class="field" style="min-width: 420px">
+      <label for="observation_id">观测（站点 / 指标 / 观测时刻）</label>
+      <select id="observation_id" name="observation_id" onchange="this.form.submit()">
+        {% for item in observations %}
+        <option value="{{ item.row.id }}"{% if selected and item.row.id == selected.row.id %} selected{% endif %}>
+          {{ item.row.site }} / {{ item.row.metric }} / {{ item.row.observed_at }} — 现用 {{ item.current_text }}{% if item.revision_no %}（已更正 {{ item.revision_no }} 次）{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn secondary" type="submit">选择</button>
+  </form>
+</div>
+
+{% if selected %}
+<div class="card">
+  <div class="card-head">
+    <h2>第二步：填写新数值与原因</h2>
+    <span class="muted small">提交后分析人员看到的现用值立即更正；原始 CSV 不变</span>
+  </div>
+
+  <dl class="meta">
+    <dt>站点</dt><dd>{{ selected.row.site }}</dd>
+    <dt>指标</dt><dd>{{ selected.row.metric }}</dd>
+    <dt>观测时刻</dt><dd class="mono">{{ selected.row.observed_at }}</dd>
+    <dt>原值（原始文件）</dt><dd class="mono">{{ selected.row.value_text }}</dd>
+    <dt>现用值（分析人员所见）</dt><dd class="mono"><strong>{{ selected.current_text }}</strong></dd>
+    <dt>已更正次数</dt><dd>{{ selected.revision_no }}</dd>
+    <dt>原始文件</dt><dd class="mono">{{ version.original_filename }}</dd>
+  </dl>
+
+  {% if selected.history %}
+  <h3>该观测的逐次更正记录</h3>
+  <ol class="history">
+    {% for record in selected.history %}
+    <li>
+      <span class="mono">{{ record.from_value_text }} → {{ record.to_value_text }}</span>
+      <span class="muted small">{{ record.corrected_at | datetime_local }}</span>
+      <span class="reason">{{ record.reason }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+
+  <form class="correct-form" method="post" action="{{ url_for('admin.correct', version_id=version.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="observation_id" value="{{ selected.row.id }}">
+    <input type="hidden" name="expected_revision_no" value="{{ selected.revision_no }}">
+    <div class="field">
+      <label for="value">新数值（有限数字）</label>
+      <input id="value" type="text" name="value" value="{{ value_input }}" placeholder="例如 1.28" required autocomplete="off">
+      <span class="hint">不能使用 NaN / 无穷大；新数值需与现用值不同</span>
+    </div>
+    <div class="field">
+      <label for="reason">更正原因</label>
+      <textarea id="reason" name="reason" rows="3" maxlength="500" required placeholder="例如：复核原始记录后确认录入有误">{{ reason_input }}</textarea>
+      <span class="hint">原因会随更正记录公开显示，最多 500 字</span>
+    </div>
+    <div class="field">
+      <button class="btn" type="submit">提交更正</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div class="actions">
+  <a class="btn secondary" href="{{ url_for('public.version_detail', version_id=version.id) }}">查看对外明细</a>
+  <a class="btn secondary" href="{{ url_for('admin.candidate_detail', version_id=version.id) }}">返回版本页</a>
+  <a class="btn secondary" href="{{ url_for('admin.dashboard') }}">返回后台</a>
+</div>
+{% endblock %}

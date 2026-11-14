@@ -23,7 +23,7 @@ from flask import (
 
 from . import services, storage
 from .db import get_db
-from .validation import validate_file
+from .validation import parse_correction_value, validate_file
 
 public_bp = Blueprint("public", __name__)
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
@@ -100,8 +100,14 @@ def version_detail(version_id: int):
         page=page,
         per_page=current_app.config["PER_PAGE"],
     )
+    rows = services.observations_with_corrections(conn, version_id, detail)
+    summary = services.version_correction_summary(conn, version_id)
     return render_template(
-        "public/version_detail.html", version=version, detail=detail
+        "public/version_detail.html",
+        version=version,
+        detail=detail,
+        rows=rows,
+        summary=summary,
     )
 
 
@@ -244,10 +250,14 @@ def candidate_detail(version_id: int):
     ).fetchone()
     current_published = services.get_current_published(conn, version["dataset_date"])
     conflict = latest is not None and int(latest) > version["version_no"]
+    rows = services.observations_with_corrections(conn, version_id, detail)
+    summary = services.version_correction_summary(conn, version_id)
     return render_template(
         "admin/candidate_detail.html",
         version=version,
         detail=detail,
+        rows=rows,
+        summary=summary,
         conflict=conflict,
         newer=newer,
         current_published=current_published,
@@ -304,3 +314,197 @@ def admin_download(version_id: int):
         download_name=version["original_filename"],
         conditional=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Corrections (admin)
+# ---------------------------------------------------------------------------
+
+
+def _correction_payload(conn, version, observation_id: int | None):
+    """Build the context for the correction page/form."""
+    options = services.correction_form_options(conn, version)
+    observations = options["observations"]
+    selected = options["selected"]
+    if observation_id is not None:
+        selected = next(
+            (row for row in observations if int(row["id"]) == int(observation_id)),
+            None,
+        )
+    latest = services.latest_corrections(conn, int(version["id"]))
+    history = services.correction_history(conn, int(version["id"]))
+    rows = []
+    for row in observations:
+        key = int(row["id"])
+        correction = latest.get(key)
+        value, value_text = services.current_value(row, correction)
+        rows.append(
+            {
+                "row": row,
+                "current_text": value_text,
+                "revision_no": services.effective_revision_no(row, correction),
+                "history": history.get(key, []),
+            }
+        )
+    selected_row = None
+    if selected is not None:
+        key = int(selected["id"])
+        correction = latest.get(key)
+        current_value, current_text = services.current_value(selected, correction)
+        selected_row = {
+            "row": selected,
+            "current_value": current_value,
+            "current_text": current_text,
+            "revision_no": services.effective_revision_no(selected, correction),
+            "history": history.get(key, []),
+        }
+    return {"observations": rows, "selected": selected_row}
+
+
+@admin_bp.get("/versions/<int:version_id>/correct")
+def correction_page(version_id: int):
+    conn = get_db()
+    version = services.get_version(conn, version_id)
+    if version is None:
+        abort(404)
+    if version["status"] != "published":
+        current = services.get_current_published(conn, version["dataset_date"])
+        flash(
+            "该版本已不是当前发布版本，可能该日期已重新发布；"
+            "请在最新发布版本上更正数值。",
+            "error",
+        )
+        if current is None:
+            abort(404)
+        return redirect(
+            url_for("admin.correction_page", version_id=current["id"])
+        )
+    observation_id = request.args.get("observation_id", type=int)
+    context = _correction_payload(conn, version, observation_id)
+    return render_template(
+        "admin/correct.html",
+        version=version,
+        **context,
+        conflict=None,
+        value_input=request.args.get("value", ""),
+        reason_input="",
+    )
+
+
+@admin_bp.post("/versions/<int:version_id>/correct")
+def correct(version_id: int):
+    _check_csrf()
+    conn = get_db()
+    version = services.get_version(conn, version_id)
+    if version is None:
+        abort(404)
+
+    observation_id = request.form.get("observation_id", type=int)
+    reason_raw = request.form.get("reason", "")
+    value_raw = request.form.get("value", "")
+    try:
+        expected_revision_no = int(request.form.get("expected_revision_no", "0"))
+    except ValueError:
+        expected_revision_no = 0
+
+    def render_form(status: int, *, notice=None, conflict=None):
+        context = _correction_payload(conn, version, observation_id)
+        return (
+            render_template(
+                "admin/correct.html",
+                version=version,
+                **context,
+                conflict=conflict,
+                notice=notice,
+                value_input=value_raw,
+                reason_input=reason_raw,
+            ),
+            status,
+        )
+
+    if version["status"] != "published":
+        current = services.get_current_published(conn, version["dataset_date"])
+        conflict = {
+            "kind": "version",
+            "message": (
+                "该版本已不再是对外发布版本：该日期可能已在别处重新发布。"
+                "本次提交未更改任何数据。"
+            ),
+            "current": current,
+        }
+        return render_form(409, conflict=conflict)
+
+    if observation_id is None:
+        return render_form(400, notice="请从该发布版本中选择一条观测。")
+
+    try:
+        new_value, new_value_text = parse_correction_value(value_raw)
+    except ValueError as exc:
+        return render_form(400, notice=f"新数值无效：{exc}")
+
+    context = _correction_payload(conn, version, observation_id)
+    if context["selected"] is None:
+        return render_form(
+            409,
+            conflict={
+                "kind": "observation",
+                "message": "所选观测不属于该发布版本，本次提交未更改任何数据。",
+                "current": None,
+            },
+        )
+    # Only report "unchanged" when the form is still current; otherwise a
+    # stale form must surface the conflict even if its value now matches.
+    if (
+        expected_revision_no == context["selected"]["revision_no"]
+        and new_value == context["selected"]["current_value"]
+    ):
+        return render_form(400, notice="新数值与现用值相同，无需更正。")
+
+    outcome = services.record_correction(
+        conn,
+        version_id=version_id,
+        observation_id=observation_id,
+        expected_revision_no=expected_revision_no,
+        new_value=new_value,
+        new_value_text=new_value_text,
+        reason=reason_raw,
+    )
+
+    if outcome.status == "corrected":
+        flash(
+            "更正已保存：公开明细的现用值已更新，原值、更正记录与原始文件均保留。",
+            "success",
+        )
+        return redirect(
+            url_for("public.version_detail", version_id=version_id)
+        )
+    if outcome.status == "not_found":
+        abort(404)
+    if outcome.status == "db_error":
+        current_app.logger.error(
+            "correction commit failed", exc_info=outcome.error
+        )
+        return render_form(
+            500,
+            notice=(
+                "更正写入失败，本次提交没有更改任何数据：现用值与更正记录均保持原状，"
+                "原始文件不受影响。请稍后重试。"
+            ),
+        )
+    if outcome.status == "unchanged":
+        return render_form(400, notice=outcome.message)
+    if outcome.status == "conflict":
+        current_version = services.get_current_published(
+            conn, version["dataset_date"]
+        )
+        return render_form(
+            409,
+            conflict={
+                "kind": outcome.conflict_kind,
+                "message": outcome.message + "本次提交未更改任何数据。",
+                "current": current_version,
+                "current_revision_no": outcome.current_revision_no,
+            },
+        )
+    return render_form(400, notice=outcome.message or "更正未保存。")
+
